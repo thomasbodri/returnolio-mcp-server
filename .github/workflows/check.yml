@@ -1,0 +1,114 @@
+# The pull request check (OWASP 2026-09-28: M9, M12, L21). Until this file the repository
+# had no CI at all. Everything runs on GitHub-hosted runners, never on the box: a pull
+# request's code is untrusted until it is merged.
+name: check
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only token for every job. Nothing here writes to the repository, comments,
+# releases or deploys (the MCP server is deployed by hand with docker compose, DEPLOY.md).
+permissions:
+  contents: read
+
+# Every action is pinned to a full commit SHA with its version in the comment: a moved
+# tag cannot change what runs here. Resolved 2026-09-28 with
+# `gh api repos/<owner>/<action>/git/ref/tags/<tag>`.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node 22, the major the Dockerfile's node:22-alpine runs.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 22, cache: npm }
+      # --ignore-scripts, as in the Dockerfile: no dependency has an install script
+      # (package-lock: 0 hasInstallScript), so none is allowed to run.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Typecheck
+        run: npx --no-install tsc --noEmit
+      - name: Build
+        run: npm run build
+      - name: Tests
+        run: npm test
+      # The production dependency tree only (what the image ships after npm prune).
+      # Fails on a high or critical advisory.
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  # Secret scan (M9). The binary is checked twice: against the hash written here, and
+  # against the release's own checksums file. A pull request scans its own commits, a
+  # push the pushed range, a manual run the whole history. .gitleaks.toml is the config.
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks 8.30.1 (checksum verified)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O "$base/$tarball"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${tarball}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Scan the new commits with the trusted rules (full history on a manual run)
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The rules come from the trusted side, never from the commits being scanned. On a pull
+          # request that is the base branch, so a pull request cannot allowlist its own secret by
+          # editing .gitleaks.toml or adding a .gitleaksignore. On a push or a manual run it is the
+          # pushed commit. Inline gitleaks:allow comments are ignored everywhere.
+          rules="$RUNNER_TEMP/gitleaks-rules"
+          mkdir -p "$rules"
+          if [ "$EVENT" = pull_request ]; then trusted="$PR_BASE"; else trusted="$PUSH_AFTER"; fi
+          if git cat-file -e "${trusted}:.gitleaks.toml" 2>/dev/null; then
+            git show "${trusted}:.gitleaks.toml" > "$rules/gitleaks.toml"
+          else
+            printf '[extend]\nuseDefault = true\n' > "$rules/gitleaks.toml"
+          fi
+          # gitleaks always reads the .gitleaksignore in the folder it scans, whatever the flags say,
+          # so the checked-out copy is replaced by the trusted one (or removed). The scan reads the
+          # commits through git, so the working tree changes nothing else.
+          rm -f .gitleaksignore
+          if git cat-file -e "${trusted}:.gitleaksignore" 2>/dev/null; then
+            git show "${trusted}:.gitleaksignore" > .gitleaksignore
+          fi
+          range=""
+          case "$EVENT" in
+            pull_request) range="${PR_BASE}..${PR_HEAD}" ;;
+            push)
+              # After a force-push, "before" can be a commit this clone does not have. Then the
+              # range cannot be read, so scan the whole history instead of failing on main.
+              if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ] &&
+                git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+                range="${PUSH_BEFORE}..${PUSH_AFTER}"
+              fi ;;
+          esac
+          set -- git --redact --verbose --no-banner --config "$rules/gitleaks.toml" --ignore-gitleaks-allow
+          if [ -n "$range" ]; then
+            gitleaks "$@" --log-opts="$range" .
+          else
+            gitleaks "$@" .
+          fi

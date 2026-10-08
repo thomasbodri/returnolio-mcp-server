@@ -1,0 +1,7 @@
+node_modules
+dist
+smoke.mjs
+.env
+docker-compose.yml
+DEPLOY.md
+.dockerignore

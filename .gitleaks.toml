@@ -1,0 +1,18 @@
+# gitleaks configuration (OWASP M9, 2026-09-28). Used by the `gitleaks` job in
+# .github/workflows/check.yml.
+#
+# It is the stock gitleaks rule set and nothing else. The full-history scan of this
+# repository on 2026-09-28 found no secret, so there is no allowlist. Add an entry only for
+# a finding that has been checked by hand and shown not to be a secret, and scope it to
+# the exact path or the exact string, never to a whole rule.
+#
+# The scan reads this file (and any .gitleaksignore) from the base branch, not from the pull
+# request being scanned, and ignores inline gitleaks:allow comments. So a pull request cannot
+# allowlist its own finding: an entry counts only once it is on main. The pull request that
+# needs it then needs a new push (or an update from main); a plain re-run of the old check
+# still reads the old base.
+
+title = "returnolio-mcp"
+
+[extend]
+useDefault = true

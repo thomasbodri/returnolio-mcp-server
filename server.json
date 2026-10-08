@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.returnolio/returnolio",
+  "title": "Returnolio",
+  "description": "Read-only stock research: company scores, the Monthly Top 10, the screener and your own portfolio.",
+  "version": "1.1.0",
+  "websiteUrl": "https://returnolio.com/docs/features/mcp",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.returnolio.com/mcp"
+    }
+  ]
+}

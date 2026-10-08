@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Throwaway probes. The token-refresh bug was proved with a short-lived
+# forged token; those scripts are shredded after use and never committed.
+smoke.mjs
+*.probe.mjs
